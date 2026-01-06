@@ -12,9 +12,9 @@ pub struct Camera {
 impl Camera {
     pub fn new() -> Self {
         Self {
-            distance: 25.0,
-            theta: 0.0,
-            phi: 0.3,  // slightly above equatorial plane
+            distance: 20.0,
+            theta: std::f32::consts::PI,  // 180 degrees
+            phi: -79.0_f32.to_radians(),  // -79 degrees
             target: Vec3::ZERO,
             fov: 60.0_f32.to_radians(),
         }

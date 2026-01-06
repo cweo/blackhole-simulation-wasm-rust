@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kerr Black Hole Simulation</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -25,6 +26,27 @@
                     <input type="checkbox" id="resolution-toggle" checked>
                     High Quality (1080p)
                 </label>
+            </div>
+            
+            <div class="control-group">
+                <label for="distance-slider">
+                    Distance: <span id="distance-value">20</span>
+                </label>
+                <input type="range" id="distance-slider" min="5" max="80" step="1" value="20">
+            </div>
+            
+            <div class="control-group">
+                <label for="theta-slider">
+                    Theta (horizontal): <span id="theta-value">180</span>°
+                </label>
+                <input type="range" id="theta-slider" min="-180" max="180" step="1" value="180">
+            </div>
+            
+            <div class="control-group">
+                <label for="phi-slider">
+                    Phi (vertical): <span id="phi-value">-79</span>°
+                </label>
+                <input type="range" id="phi-slider" min="-85" max="85" step="1" value="-79">
             </div>
             
             <div class="info">
@@ -93,6 +115,26 @@
                 const spin = parseFloat(e.target.value).toFixed(2);
                 spinValue.textContent = spin;
                 updatePhysicsInfo(spin);
+            });
+            
+            // Camera sliders
+            const distanceSlider = document.getElementById('distance-slider');
+            const distanceValue = document.getElementById('distance-value');
+            const thetaSlider = document.getElementById('theta-slider');
+            const thetaValue = document.getElementById('theta-value');
+            const phiSlider = document.getElementById('phi-slider');
+            const phiValue = document.getElementById('phi-value');
+            
+            distanceSlider.addEventListener('input', (e) => {
+                distanceValue.textContent = e.target.value;
+            });
+            
+            thetaSlider.addEventListener('input', (e) => {
+                thetaValue.textContent = e.target.value;
+            });
+            
+            phiSlider.addEventListener('input', (e) => {
+                phiValue.textContent = e.target.value;
             });
             
             // Initial physics info

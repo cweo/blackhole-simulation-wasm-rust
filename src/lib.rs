@@ -81,10 +81,45 @@ fn read_ui_params() -> SimParams {
 }
 
 #[cfg(target_arch = "wasm32")]
+fn read_camera_overrides() -> (Option<f32>, Option<f32>, Option<f32>) {
+    let window = web_sys::window().unwrap();
+    let document = window.document().unwrap();
+    
+    let distance = document
+        .get_element_by_id("distance-slider")
+        .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
+        .map(|input| input.value().parse::<f32>().unwrap_or(20.0));
+
+    let theta = document
+        .get_element_by_id("theta-slider")
+        .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
+        .map(|input| input.value().parse::<f32>().unwrap_or(180.0).to_radians());
+
+    let phi = document
+        .get_element_by_id("phi-slider")
+        .and_then(|el| el.dyn_into::<web_sys::HtmlInputElement>().ok())
+        .map(|input| input.value().parse::<f32>().unwrap_or(-79.0).to_radians());
+
+    (distance, theta, phi)
+}
+
+#[cfg(target_arch = "wasm32")]
 fn render_frame() {
     APP_STATE.with(|state| {
         let mut state = state.borrow_mut();
         state.params = read_ui_params();
+        
+        // Apply camera overrides from sliders
+        let (distance, theta, phi) = read_camera_overrides();
+        if let Some(d) = distance {
+            state.camera.distance = d;
+        }
+        if let Some(t) = theta {
+            state.camera.theta = t;
+        }
+        if let Some(p) = phi {
+            state.camera.phi = p;
+        }
         
         // Copy values we need before borrowing renderer mutably
         let camera = state.camera.clone();

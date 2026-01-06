@@ -357,6 +357,75 @@ fn photon_ring_glow(r: f32, r_photon: f32) -> vec3<f32> {
     return vec3<f32>(1.0, 0.9, 0.7) * glow;
 }
 
+// Hawking radiation - particles emerging from near the event horizon
+// Visualized as discrete particle-like emissions
+fn hawking_radiation(pos: vec3<f32>, r: f32, r_horizon: f32, time: f32) -> vec3<f32> {
+    // Only emit from just outside event horizon
+    let emission_zone = smoothstep(r_horizon * 0.95, r_horizon * 1.05, r) 
+                       * (1.0 - smoothstep(r_horizon * 1.05, r_horizon * 2.5, r));
+    
+    if (emission_zone < 0.01) {
+        return vec3<f32>(0.0);
+    }
+    
+    // Convert position to spherical for particle placement
+    let theta = atan2(pos.y, pos.x);
+    let phi = asin(clamp(pos.z / max(r, 0.001), -1.0, 1.0));
+    
+    var hawking = vec3<f32>(0.0);
+    
+    // Create multiple particle streams at different angles
+    for (var i = 0; i < 12; i++) {
+        // Each particle stream has a base angle
+        let stream_theta = f32(i) * PI / 6.0;
+        let stream_phi = sin(f32(i) * 2.3) * 0.8;
+        
+        // Particles move outward over time
+        let particle_speed = 0.3 + hash(vec2<f32>(f32(i), 0.0)) * 0.4;
+        let particle_phase = fract(time * particle_speed + hash(vec2<f32>(f32(i), 1.0)));
+        
+        // Particle radial position (emerging from horizon)
+        let particle_r = r_horizon * (1.02 + particle_phase * 1.5);
+        
+        // Distance from this ray position to particle
+        let dr = abs(r - particle_r);
+        let dtheta = abs(atan2(sin(theta - stream_theta), cos(theta - stream_theta)));
+        let dphi = abs(phi - stream_phi);
+        
+        // Particle intensity with distance falloff
+        let angular_dist = sqrt(dtheta * dtheta + dphi * dphi) * particle_r;
+        let radial_dist = dr;
+        let total_dist = sqrt(angular_dist * angular_dist + radial_dist * radial_dist);
+        
+        // Particle glow - small bright points
+        let particle_size = 0.15 + hash(vec2<f32>(f32(i), 2.0)) * 0.1;
+        let particle_glow = exp(-total_dist * total_dist / (particle_size * particle_size));
+        
+        // Particles fade as they move away
+        let fade = 1.0 - particle_phase;
+        
+        // Hawking radiation is thermal - mix of particle colors
+        // Virtual particle pairs: one escapes (we see it), one falls in
+        let temp = 6.2e-8 / r_horizon; // Hawking temperature (scaled for visibility)
+        let visual_temp = 8000.0 + hash(vec2<f32>(f32(i), 3.0)) * 12000.0; // Artistic license
+        let particle_color = blackbody_color(visual_temp);
+        
+        // Some particles are matter (warm), some antimatter (cool blue tint)
+        var final_color = particle_color;
+        if (hash(vec2<f32>(f32(i), 4.0)) > 0.5) {
+            final_color = mix(particle_color, vec3<f32>(0.6, 0.8, 1.0), 0.3);
+        }
+        
+        hawking += final_color * particle_glow * fade * 1.5;
+    }
+    
+    // Add continuous faint glow representing the quantum foam
+    let quantum_foam = fbm(vec2<f32>(theta * 10.0 + time * 2.0, phi * 10.0)) * emission_zone;
+    hawking += vec3<f32>(0.5, 0.6, 0.9) * quantum_foam * 0.15;
+    
+    return hawking * emission_zone;
+}
+
 // Enhanced starfield with nebula
 fn sample_stars(dir: vec3<f32>) -> vec3<f32> {
     let d = normalize(dir);
@@ -427,6 +496,12 @@ fn trace_ray(origin: vec3<f32>, direction: vec3<f32>) -> vec4<f32> {
             color = mix(color, vec3<f32>(0.0), 1.0 - accumulated_alpha);
             accumulated_alpha = 1.0;
             break;
+        }
+        
+        // Hawking radiation near horizon
+        if (r > r_horizon * 0.95 && r < r_horizon * 2.5) {
+            let hawking = hawking_radiation(pos, r, r_horizon, blackhole.time);
+            color += hawking * (1.0 - accumulated_alpha);
         }
         
         // Photon ring glow
