@@ -68,6 +68,39 @@ npx serve .
 
 Then open http://localhost:8080 in a WebGPU-compatible browser (Chrome 113+, Edge 113+, Firefox Nightly).
 
+## Docker
+
+Run the simulation in a container:
+
+```bash
+# Build and run with Docker Compose
+docker compose up --build
+
+# Or with Docker directly
+docker build -t blackhole-simulation .
+docker run -p 8080:80 blackhole-simulation
+```
+
+Then open http://localhost:8080
+
+## Azure Deployment
+
+Deploy to Azure Container Apps using the Azure Developer CLI:
+
+```bash
+# Login to Azure
+azd auth login
+
+# Deploy everything (infrastructure + app)
+azd up
+```
+
+This provisions:
+- **Container Registry** - Stores the Docker image
+- **Container Apps** - Serverless hosting (scales 0-3 replicas)
+- **Log Analytics** - Logging and diagnostics
+- **Application Insights** - Performance monitoring
+
 ## Physics
 
 The simulation implements Kerr black hole geodesics using:
