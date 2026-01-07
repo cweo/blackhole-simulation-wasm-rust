@@ -1,0 +1,19 @@
+# Azure Developer CLI configuration
+name: blackhole-simulation
+metadata:
+  template: blackhole-simulation@0.0.1
+
+# Azure infrastructure configuration
+infra:
+  provider: bicep
+  path: ./infra
+
+# Services to deploy
+services:
+  web:
+    project: .
+    language: docker
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      context: .
