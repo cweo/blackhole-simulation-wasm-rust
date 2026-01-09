@@ -19,12 +19,8 @@ pub enum Quality {
 
 impl Quality {
     fn max_steps(&self) -> i32 {
-        match self {
-            Quality::Preview => 500,
-            Quality::High => 2000,
-            Quality::Ultra => 5000,
-            Quality::Insane => 10000,
-        }
+        // Fixed at 550 to match WGSL (use --steps to override)
+        550
     }
     
     fn samples_per_pixel(&self) -> u32 {
@@ -37,12 +33,8 @@ impl Quality {
     }
     
     fn escape_radius(&self) -> f32 {
-        match self {
-            Quality::Preview => 100.0,
-            Quality::High => 150.0,
-            Quality::Ultra => 200.0,
-            Quality::Insane => 300.0,
-        }
+        // Match WGSL constant
+        100.0
     }
 }
 
@@ -56,6 +48,7 @@ struct RenderParams {
     camera_phi: f32,
     fov: f32,
     quality: Quality,
+    max_steps: i32,
     disk_inner: f32,
     disk_outer: f32,
     time: f32,
@@ -67,11 +60,12 @@ impl Default for RenderParams {
             width: 3840,
             height: 2160,
             spin: 0.9,
-            camera_distance: 25.0,
-            camera_theta: 0.0,
-            camera_phi: 0.35,
+            camera_distance: 20.0,                      // Match web: 20.0
+            camera_theta: std::f32::consts::PI,         // Match web: PI (180 degrees)
+            camera_phi: -79.0_f32.to_radians(),         // Match web: -79 degrees
             fov: 60.0_f32.to_radians(),
             quality: Quality::Ultra,
+            max_steps: 550,                             // Match WGSL MAX_STEPS
             disk_inner: 0.0, // Will be calculated
             disk_outer: 20.0,
             time: 0.0,
@@ -164,6 +158,11 @@ fn isco_radius(spin: f32) -> f32 {
     3.0 + z2 - ((3.0 - z1) * (3.0 + z1 + 2.0 * z2)).sqrt()
 }
 
+// Match WGSL photon_sphere_radius
+fn photon_sphere_radius(a: f32) -> f32 {
+    1.5 * (1.0 + (1.0 - a * a * 0.5).sqrt())
+}
+
 fn frame_drag_omega(r: f32, z: f32, a: f32) -> f32 {
     let r2 = r * r;
     let a2 = a * a;
@@ -189,20 +188,14 @@ fn kerr_acceleration(pos: Vec3, vel: Vec3, a: f32) -> Vec3 {
     accel
 }
 
-fn adaptive_step(r: f32, r_horizon: f32, quality: Quality) -> f32 {
-    let base = match quality {
-        Quality::Preview => 1.0,
-        Quality::High => 0.5,
-        Quality::Ultra => 0.25,
-        Quality::Insane => 0.1,
-    };
-    
+fn adaptive_step(r: f32, r_horizon: f32) -> f32 {
+    // Match WGSL adaptive_step function
     let dist = r - r_horizon;
-    if dist < 0.3 { return 0.005 * base; }
-    if dist < 1.0 { return 0.01 * base; }
-    if dist < 3.0 { return 0.02 * base; }
-    if r < 15.0 { return 0.03 * base; }
-    (0.05 * base).min(r * 0.005)
+    if dist < 0.3 { return 0.015; }
+    if dist < 1.0 { return 0.03; }
+    if dist < 3.0 { return 0.05; }
+    if r < 15.0 { return 0.07; }
+    (0.12_f32).min(r * 0.015)
 }
 
 fn rk4_step(pos: Vec3, vel: Vec3, a: f32, dt: f32) -> (Vec3, Vec3) {
@@ -240,29 +233,41 @@ fn blackbody_color(temp: f32) -> Vec3 {
 
 fn hot_spots(r: f32, phi: f32, time: f32, disk_inner: f32) -> f32 {
     let mut spots = 0.0;
-    for i in 0..8 {
-        let spot_r = disk_inner * (1.2 + i as f32 * 0.35);
+    // Match WGSL: 5 spots with different spacing
+    for i in 0..5 {
+        let spot_r = disk_inner * (1.2 + i as f32 * 0.4);
         let orbit_speed = 1.0 / (spot_r.sqrt() * spot_r);
-        let spot_phi = i as f32 * 0.785 + time * orbit_speed;
+        let spot_phi = i as f32 * 1.256 + time * orbit_speed;
         let dr = r - spot_r;
         let dphi = (phi - spot_phi).sin().atan2((phi - spot_phi).cos());
         let dist2 = dr * dr + (dphi * spot_r) * (dphi * spot_r);
-        let spot_size = 0.25 + hash([i as f32, 0.0]) * 0.35;
-        spots += (-dist2 / (spot_size * spot_size)).exp() * (0.4 + hash([i as f32, 1.0]) * 0.6);
+        let spot_size = 0.3 + hash([i as f32, 0.0]) * 0.4;
+        spots += (-dist2 / (spot_size * spot_size)).exp() * (0.5 + hash([i as f32, 1.0]) * 0.5);
     }
     spots
 }
 
 fn particle_density(r: f32, phi: f32, time: f32) -> f32 {
-    let orbit_phase = phi - time * 0.15 / r.max(1.0).sqrt();
+    // Match WGSL particle_density
+    let orbit_phase = phi - time * 0.2 / r.max(1.0).sqrt();
     let p = [orbit_phase * 3.0, r.ln() * 4.0];
-    let v = voronoi([p[0] * 4.0, p[1] * 4.0]);
-    let clumps = (0.25 - v).max(0.0) / 0.25;
-    let fine = fbm([phi * 25.0, r * 2.5 + time * 0.08], 6);
-    clumps * 0.4 + fine * 0.35 + 0.45
+    let v = voronoi([p[0] * 3.0, p[1] * 3.0]);
+    // Create clumpy structure using smoothstep
+    let clumps = smoothstep(0.3, 0.0, v);
+    // Add smaller scale detail
+    let fine_detail = fbm([phi * 20.0, r * 2.0 + time * 0.1], 6);
+    clumps * 0.5 + fine_detail * 0.3 + 0.4
 }
 
-fn sample_disk(hit_r: f32, hit_phi: f32, ray_dir: Vec3, params: &RenderParams) -> Vec4 {
+// Match WGSL dust_lanes
+fn dust_lanes(r: f32, phi: f32) -> f32 {
+    let spiral_arm = (phi * 2.0 + r.ln() * 3.0).sin() * 0.5 + 0.5;
+    let dust = fbm([phi * 5.0, r * 0.5], 6) * spiral_arm;
+    1.0 - dust * 0.3
+}
+
+fn sample_disk(hit_r: f32, hit_phi: f32, ray_dir: Vec3, depth: f32, params: &RenderParams) -> Vec4 {
+    // Match WGSL sample_disk function
     let r_safe = hit_r.max(params.disk_inner);
     let v_kepler = (1.0 / r_safe).sqrt();
     let disk_vel = v_kepler * Vec3::new(-hit_phi.sin(), hit_phi.cos(), 0.0);
@@ -275,46 +280,59 @@ fn sample_disk(hit_r: f32, hit_phi: f32, ray_dir: Vec3, params: &RenderParams) -
     let grav_redshift = (1.0 - 2.0 / r_safe).max(0.01).sqrt();
     let freq_shift = doppler * grav_redshift;
     
+    // Temperature with local variations (match WGSL)
     let r_ratio = params.disk_inner / r_safe;
     let base_temp = 5500.0;
-    let temp_var = 1.0 + 0.35 * fbm([hit_phi * 12.0, hit_r + params.time * 0.15], 6);
-    let local_temp = base_temp * r_ratio.powf(0.75) * temp_var;
+    let temp_variation = 1.0 + 0.3 * fbm([hit_phi * 10.0, hit_r + params.time * 0.2], 6);
+    let local_temp = base_temp * r_ratio.powf(0.75) * temp_variation;
     let observed_temp = local_temp / freq_shift;
     
     let mut color = blackbody_color(observed_temp);
+    
+    // Relativistic beaming
     let beam_factor = (1.0 / freq_shift.max(0.1)).powf(3.5);
     
+    // Radial profile (match WGSL)
     let r_norm = (hit_r - params.disk_inner) / (params.disk_outer - params.disk_inner);
-    let radial_profile = (-r_norm * 1.5).exp() * (1.0 - (-r_norm * 12.0).exp());
+    let radial_profile = (-r_norm * 1.5).exp() * (1.0 - (-r_norm * 10.0).exp());
     
+    // Particle density and clumping
     let particles = particle_density(hit_r, hit_phi, params.time);
-    let spots = hot_spots(hit_r, hit_phi, params.time, params.disk_inner);
-    
-    // Dust lanes
-    let spiral_arm = (hit_phi * 2.0 + hit_r.ln() * 3.0).sin() * 0.5 + 0.5;
-    let dust = 1.0 - fbm([hit_phi * 6.0, r_safe * 0.4], 5) * spiral_arm * 0.35;
-    
-    // Spiral waves
-    let spiral1 = 0.85 + 0.15 * (hit_phi * 2.0 + r_safe.ln() * 4.5 - params.time * 0.12).sin();
-    let spiral2 = 0.9 + 0.1 * (hit_phi * 3.0 - r_safe.ln() * 2.5 + params.time * 0.08).sin();
-    
-    let mut intensity = beam_factor * radial_profile * particles * dust * spiral1 * spiral2;
     
     // Hot spots
-    let spot_color = blackbody_color(observed_temp * 1.6);
-    color = color.lerp(spot_color, spots * 0.6);
-    intensity += spots * 2.5;
+    let spots = hot_spots(hit_r, hit_phi, params.time, params.disk_inner);
     
-    // Inner glow
-    let inner_glow = (-(hit_r - params.disk_inner) * 2.5).exp() * 4.0;
-    color += Vec3::new(1.0, 0.65, 0.25) * inner_glow * beam_factor;
+    // Dust absorption
+    let dust = dust_lanes(hit_r, hit_phi);
     
-    let inner_fade = smoothstep(params.disk_inner * 0.94, params.disk_inner * 1.12, hit_r);
-    let outer_fade = 1.0 - smoothstep(params.disk_outer * 0.65, params.disk_outer, hit_r);
+    // Spiral density waves (match WGSL)
+    let spiral_phase = hit_phi * 2.0 + r_safe.ln() * 4.0 - params.time * 0.15;
+    let spiral_density = 0.8 + 0.2 * spiral_phase.sin();
+    let spiral_phase2 = hit_phi * 3.0 - r_safe.ln() * 2.0 + params.time * 0.1;
+    let spiral_density2 = 0.9 + 0.1 * spiral_phase2.sin();
     
-    color *= intensity * inner_fade * outer_fade * 2.2;
+    // Combine all effects
+    let mut intensity = beam_factor * radial_profile * particles * dust * spiral_density * spiral_density2;
     
-    Vec4::new(color.x, color.y, color.z, inner_fade * outer_fade)
+    // Add hot spot glow (match WGSL)
+    let spot_color = blackbody_color(observed_temp * 1.5);
+    color = color.lerp(spot_color, spots * 0.5);
+    intensity += spots * 2.0;
+    
+    // Inner edge glow (matter plunging into BH) - match WGSL
+    let inner_glow = (-(hit_r - params.disk_inner) * 2.0).exp() * 3.0;
+    color += Vec3::new(1.0, 0.7, 0.3) * inner_glow * beam_factor;
+    
+    // Edge softening (match WGSL)
+    let inner_fade = smoothstep(params.disk_inner * 0.95, params.disk_inner * 1.15, hit_r);
+    let outer_fade = 1.0 - smoothstep(params.disk_outer * 0.7, params.disk_outer, hit_r);
+    
+    // Depth factor for volumetric feel
+    let volume_factor = 0.7 + 0.3 * depth;
+    
+    color *= intensity * inner_fade * outer_fade * volume_factor * 2.0;
+    
+    Vec4::new(color.x, color.y, color.z, inner_fade * outer_fade * depth)
 }
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
@@ -323,114 +341,212 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 }
 
 fn sample_stars(dir: Vec3) -> Vec3 {
+    // Match WGSL sample_stars function
     let d = dir.normalize();
     let theta = d.z.atan2(d.x);
     let phi = d.y.clamp(-1.0, 1.0).asin();
     
     let mut stars = Vec3::ZERO;
     
-    // Multiple star layers
-    for layer in 0..5 {
-        let scale = 50.0 + layer as f32 * 30.0;
+    // Multiple star layers with varying densities (match WGSL)
+    for layer in 0..4 {
+        let scale = 40.0 + layer as f32 * 25.0;
         let grid = [(theta * scale).floor(), (phi * scale).floor()];
-        let h = hash([grid[0] + layer as f32 * 173.0, grid[1] + layer as f32 * 137.0]);
+        let cell_center = [(grid[0] + 0.5) / scale, (grid[1] + 0.5) / scale];
+        let h = hash([grid[0] + layer as f32 * 137.0, grid[1] + layer as f32 * 137.0]);
         
-        if h > 0.98 {
-            let brightness = ((h - 0.98) / 0.02).powf(0.35) * (1.0 - layer as f32 * 0.12);
-            let star_temp = 2200.0 + h * 28000.0;
-            stars += blackbody_color(star_temp) * brightness * 0.4;
+        if h > 0.982 {
+            // Star position within cell
+            let star_offset = hash2([grid[0], grid[1]]);
+            let star_offset = [star_offset[0] - 0.5, star_offset[1] - 0.5];
+            let star_pos = [cell_center[0] + star_offset[0] * 0.8 / scale, 
+                           cell_center[1] + star_offset[1] * 0.8 / scale];
+            let dist = ((theta - star_pos[0] * scale / scale).powi(2) + 
+                       (phi - star_pos[1] * scale / scale).powi(2)).sqrt();
+            
+            let brightness = ((h - 0.982) / 0.018).powf(0.4) * (1.0 - layer as f32 * 0.15);
+            let star_temp = 2500.0 + h * 25000.0;
+            let star_glow = (-dist * dist * scale * 2.0).exp();
+            stars += blackbody_color(star_temp) * brightness * star_glow * 0.5;
         }
     }
     
-    // Nebula
-    let nebula_coord = [theta * 2.5, phi * 3.5];
+    // Nebula clouds (match WGSL)
+    let nebula_coord = [theta * 2.0, phi * 3.0];
     let nebula_density = fbm(nebula_coord, 6) * fbm([nebula_coord[0] * 2.0 + 5.0, nebula_coord[1] * 2.0], 5);
-    let nebula_color = Vec3::new(0.12, 0.06, 0.22).lerp(
-        Vec3::new(0.22, 0.1, 0.16),
+    let nebula_color = Vec3::new(0.1, 0.05, 0.2).lerp(
+        Vec3::new(0.2, 0.1, 0.15),
         fbm([nebula_coord[0] * 0.5, nebula_coord[1] * 0.5], 4)
     );
-    stars += nebula_color * nebula_density * 0.12;
+    stars += nebula_color * nebula_density * 0.1;
     
-    // Milky way
-    let galactic = (-phi * phi * 10.0).exp();
-    let milky = fbm([theta * 4.0, phi * 12.0], 6) * galactic;
-    stars += Vec3::new(0.16, 0.13, 0.11) * milky * 0.35;
+    // Milky way band (match WGSL)
+    let galactic = (-phi * phi * 8.0).exp();
+    let milky = fbm([theta * 3.0, phi * 10.0], 6) * galactic;
+    stars += Vec3::new(0.15, 0.12, 0.1) * milky * 0.3;
     
     stars
+}
+
+// Photon ring glow near the photon sphere (match WGSL)
+fn photon_ring_glow(r: f32, r_photon: f32) -> Vec3 {
+    let dist = (r - r_photon).abs();
+    let glow = (-dist * 3.0).exp() * 0.3;
+    Vec3::new(1.0, 0.9, 0.7) * glow
+}
+
+// Hawking radiation visualization (match WGSL)
+fn hawking_radiation(pos: Vec3, r: f32, r_horizon: f32, time: f32) -> Vec3 {
+    // Only emit from just outside event horizon
+    let emission_zone = smoothstep(r_horizon * 0.95, r_horizon * 1.05, r) 
+                       * (1.0 - smoothstep(r_horizon * 1.05, r_horizon * 2.5, r));
+    
+    if emission_zone < 0.01 {
+        return Vec3::ZERO;
+    }
+    
+    // Convert position to spherical for particle placement
+    let theta = pos.y.atan2(pos.x);
+    let phi = (pos.z / r.max(0.001)).clamp(-1.0, 1.0).asin();
+    
+    let mut hawking = Vec3::ZERO;
+    
+    // Create multiple particle streams at different angles
+    for i in 0..12 {
+        let stream_theta = i as f32 * PI / 6.0;
+        let stream_phi = (i as f32 * 2.3).sin() * 0.8;
+        
+        // Particles move outward over time
+        let particle_speed = 0.3 + hash([i as f32, 0.0]) * 0.4;
+        let particle_phase = (time * particle_speed + hash([i as f32, 1.0])).fract();
+        
+        // Particle radial position
+        let particle_r = r_horizon * (1.02 + particle_phase * 1.5);
+        
+        // Distance from this ray position to particle
+        let dr = (r - particle_r).abs();
+        let dtheta = (theta - stream_theta).sin().atan2((theta - stream_theta).cos()).abs();
+        let dphi = (phi - stream_phi).abs();
+        
+        let angular_dist = (dtheta * dtheta + dphi * dphi).sqrt() * particle_r;
+        let total_dist = (angular_dist * angular_dist + dr * dr).sqrt();
+        
+        // Particle glow
+        let particle_size = 0.15 + hash([i as f32, 2.0]) * 0.1;
+        let particle_glow = (-total_dist * total_dist / (particle_size * particle_size)).exp();
+        
+        // Particles fade as they move away
+        let fade = 1.0 - particle_phase;
+        
+        let visual_temp = 8000.0 + hash([i as f32, 3.0]) * 12000.0;
+        let mut particle_color = blackbody_color(visual_temp);
+        
+        // Some particles are matter, some antimatter (cool blue tint)
+        if hash([i as f32, 4.0]) > 0.5 {
+            particle_color = particle_color.lerp(Vec3::new(0.6, 0.8, 1.0), 0.3);
+        }
+        
+        hawking += particle_color * particle_glow * fade * 1.5;
+    }
+    
+    // Add continuous faint glow representing the quantum foam
+    let quantum_foam = fbm([theta * 10.0 + time * 2.0, phi * 10.0], 6) * emission_zone;
+    hawking += Vec3::new(0.5, 0.6, 0.9) * quantum_foam * 0.15;
+    
+    hawking * emission_zone
+}
+
+// Check disk crossing with thickness (match WGSL)
+fn check_disk_crossing(old_pos: Vec3, new_pos: Vec3, disk_height: f32, disk_inner: f32, disk_outer: f32) -> Vec4 {
+    // Check if we're within disk thickness
+    let avg_z = (old_pos.z + new_pos.z) * 0.5;
+    let r = ((old_pos.x + new_pos.x) * 0.5).hypot((old_pos.y + new_pos.y) * 0.5);
+    
+    // Disk thickness varies with radius (flared disk)
+    let local_height = disk_height * (1.0 + (r - disk_inner) * 0.05);
+    
+    if avg_z.abs() < local_height && r >= disk_inner && r <= disk_outer {
+        let hit_pos = (old_pos + new_pos) * 0.5;
+        let hit_r = hit_pos.x.hypot(hit_pos.y);
+        let hit_phi = hit_pos.y.atan2(hit_pos.x);
+        let depth = 1.0 - avg_z.abs() / local_height;
+        return Vec4::new(1.0, hit_r, hit_phi, depth);
+    }
+    
+    // Also check z-plane crossing for thin disk component
+    if old_pos.z * new_pos.z < 0.0 {
+        let t = -old_pos.z / (new_pos.z - old_pos.z + 0.00001);
+        let hit_pos = old_pos.lerp(new_pos, t);
+        let hit_r = hit_pos.x.hypot(hit_pos.y);
+        if hit_r >= disk_inner && hit_r <= disk_outer {
+            return Vec4::new(1.0, hit_r, hit_pos.y.atan2(hit_pos.x), 1.0);
+        }
+    }
+    Vec4::new(-1.0, 0.0, 0.0, 0.0)
 }
 
 fn trace_ray(origin: Vec3, direction: Vec3, params: &RenderParams) -> Vec3 {
     let mut pos = origin;
     let mut vel = direction.normalize();
     let mut color = Vec3::ZERO;
-    let mut alpha = 0.0;
+    let mut accumulated_alpha = 0.0;
     
     let a = params.spin;
     let r_horizon = horizon_radius(a);
+    let r_photon = photon_sphere_radius(a);
     let escape_radius = params.quality.escape_radius();
-    let max_steps = params.quality.max_steps();
-    let disk_height = 0.12;
+    let max_steps = params.max_steps;
+    let disk_height = 0.15;  // Match WGSL
     
-    let mut disk_hits = 0;
+    let mut in_disk_count = 0;
     
     for _ in 0..max_steps {
-        if alpha > 0.998 { break; }
+        if accumulated_alpha > 0.995 { break; }
         
         let r = kerr_r(pos, a);
         
-        if r < r_horizon * 1.005 {
-            color = color.lerp(Vec3::ZERO, 1.0 - alpha);
-            alpha = 1.0;
+        // Fell into black hole
+        if r < r_horizon * 1.01 {
+            color = color.lerp(Vec3::ZERO, 1.0 - accumulated_alpha);
+            accumulated_alpha = 1.0;
             break;
         }
         
-        if r > escape_radius {
-            let bg = sample_stars(vel);
-            color = color.lerp(bg, 1.0 - alpha);
-            alpha = 1.0;
-            break;
+        // Hawking radiation near horizon
+        if r > r_horizon * 0.95 && r < r_horizon * 2.5 {
+            let hawking = hawking_radiation(pos, r, r_horizon, params.time);
+            color += hawking * (1.0 - accumulated_alpha);
         }
         
         // Photon ring glow
-        let r_photon = 1.5 * (1.0 + (1.0 - a * a * 0.5).sqrt());
-        if r > r_horizon * 1.03 && r < r_photon * 1.4 {
-            let dist = (r - r_photon).abs();
-            let glow = (-dist * 4.0).exp() * 0.25;
-            color += Vec3::new(1.0, 0.92, 0.75) * glow * (1.0 - alpha) * 0.08;
+        if r > r_horizon * 1.05 && r < r_photon * 1.5 {
+            let ring_glow = photon_ring_glow(r, r_photon);
+            color += ring_glow * (1.0 - accumulated_alpha) * 0.1;
         }
         
-        let dt = adaptive_step(r, r_horizon, params.quality);
+        // Escaped to infinity
+        if r > escape_radius {
+            let bg = sample_stars(vel);
+            color = color.lerp(bg, 1.0 - accumulated_alpha);
+            accumulated_alpha = 1.0;
+            break;
+        }
+        
+        let dt = adaptive_step(r, r_horizon);
         let old_pos = pos;
         
         let (new_pos, new_vel) = rk4_step(pos, vel, a, dt);
         pos = new_pos;
         vel = new_vel.normalize();
         
-        // Check disk crossing with thickness
-        let avg_z = (old_pos.z + pos.z) * 0.5;
-        let avg_r = ((old_pos.x + pos.x) * 0.5).hypot((old_pos.y + pos.y) * 0.5);
-        let local_height = disk_height * (1.0 + (avg_r - params.disk_inner) * 0.04);
-        
-        let in_disk = avg_z.abs() < local_height && avg_r >= params.disk_inner && avg_r <= params.disk_outer;
-        let crossed_plane = old_pos.z * pos.z < 0.0;
-        
-        if (in_disk || crossed_plane) && disk_hits < 4 {
-            let hit_pos = if crossed_plane {
-                let t = -old_pos.z / (pos.z - old_pos.z + 0.00001);
-                old_pos.lerp(pos, t)
-            } else {
-                (old_pos + pos) * 0.5
-            };
-            
-            let hit_r = hit_pos.x.hypot(hit_pos.y);
-            if hit_r >= params.disk_inner && hit_r <= params.disk_outer {
-                let hit_phi = hit_pos.y.atan2(hit_pos.x);
-                let disk_color = sample_disk(hit_r, hit_phi, vel, params);
-                let blend = disk_color.w * (1.0 - alpha);
-                color += Vec3::new(disk_color.x, disk_color.y, disk_color.z) * blend;
-                alpha += blend * 0.88;
-                disk_hits += 1;
-            }
+        // Check disk with thickness (match WGSL)
+        let disk_hit = check_disk_crossing(old_pos, pos, disk_height, params.disk_inner, params.disk_outer);
+        if disk_hit.x > 0.0 && in_disk_count < 3 {
+            let disk_color = sample_disk(disk_hit.y, disk_hit.z, vel, disk_hit.w, params);
+            let blend = disk_color.w * (1.0 - accumulated_alpha);
+            color += Vec3::new(disk_color.x, disk_color.y, disk_color.z) * blend;
+            accumulated_alpha += blend * 0.85;
+            in_disk_count += 1;
         }
     }
     
@@ -548,15 +664,19 @@ fn main() {
                 i += 1;
             }
             "-d" | "--distance" => {
-                params.camera_distance = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(25.0);
+                params.camera_distance = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(20.0);
                 i += 1;
             }
             "-t" | "--theta" => {
-                params.camera_theta = args.get(i + 1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0).to_radians();
+                params.camera_theta = args.get(i + 1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(180.0).to_radians();
                 i += 1;
             }
             "-p" | "--phi" => {
-                params.camera_phi = args.get(i + 1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(20.0).to_radians();
+                params.camera_phi = args.get(i + 1).and_then(|s| s.parse::<f32>().ok()).unwrap_or(-79.0).to_radians();
+                i += 1;
+            }
+            "-n" | "--steps" => {
+                params.max_steps = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(550);
                 i += 1;
             }
             "--help" => {
@@ -569,15 +689,16 @@ fn main() {
                 println!("  -h, --height <HEIGHT>    Output height (default: 2160)");
                 println!("  -s, --spin <SPIN>        Black hole spin 0-0.99 (default: 0.9)");
                 println!("  -q, --quality <QUALITY>  preview|high|ultra|insane (default: ultra)");
-                println!("  -d, --distance <DIST>    Camera distance (default: 25)");
-                println!("  -t, --theta <DEG>        Camera horizontal angle in degrees (default: 0)");
-                println!("  -p, --phi <DEG>          Camera vertical angle in degrees (default: 20)");
+                println!("  -d, --distance <DIST>    Camera distance (default: 20)");
+                println!("  -t, --theta <DEG>        Camera horizontal angle in degrees (default: 180)");
+                println!("  -p, --phi <DEG>          Camera vertical angle in degrees (default: -79)");
+                println!("  -n, --steps <STEPS>      Max ray tracing steps (default: 550)");
                 println!();
-                println!("Quality presets:");
-                println!("  preview: 500 steps, 1 sample/pixel");
-                println!("  high:    2000 steps, 4 samples/pixel");
-                println!("  ultra:   5000 steps, 16 samples/pixel");
-                println!("  insane:  10000 steps, 64 samples/pixel");
+                println!("Quality presets affect samples/pixel:");
+                println!("  preview: 1 sample/pixel");
+                println!("  high:    4 samples/pixel");
+                println!("  ultra:   16 samples/pixel");
+                println!("  insane:  64 samples/pixel");
                 return;
             }
             _ => {}
@@ -592,9 +713,8 @@ fn main() {
     println!("================================");
     println!("Resolution: {}x{}", params.width, params.height);
     println!("Spin: {:.2}", params.spin);
-    println!("Quality: {} steps, {} samples/pixel", 
-             params.quality.max_steps(), 
-             params.quality.samples_per_pixel());
+    println!("Max Steps: {}", params.max_steps);
+    println!("Samples/pixel: {}", params.quality.samples_per_pixel());
     println!("ISCO: {:.3}M", params.disk_inner);
     println!("Event Horizon: {:.3}M", horizon_radius(params.spin));
     println!();
